@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hdevelop file_version="1.2" halcon_version="24.05.0.0">
+<procedure name="main">
+<interface/>
+<body>
+<c>* ================== 程序思路（01 训练） ==================</c>
+<c>* 目标：训练一个能认出 "GLOSSED" 这几个字母的 OCR 模型（.omc）。</c>
+<c>*   OCR 本质是分类器：给它一张字符小图，它判断是 G 还是 L。</c>
+<c>*   出厂模型认的是印刷体，实际图片字体/光照有差异，所以用自己的图重新训练。</c>
+<c></c>
+<c>* 一、整体流程（5 大步）</c>
+<c>*   ① 找字：读图 → 转灰度 → 阈值(150~255 取亮字) → 连通域 → 筛选去噪</c>
+<c>*          → 横向膨胀(121,5) 把同一行字母粘成一块 → 合并 → 取面积最大的文字块</c>
+<c>*   ② 定框：外接矩形 smallest_rectangle1 → 生成 ROI</c>
+<c>*   ③ 切字：ROI 内二次阈值 → 连通域 → 按尺寸筛选 → 按列排序成 G,L,O,S,S,E,D 顺序</c>
+<c>*   ④ 训练：写训练文件 .trf（每张字符图 + 标签）→ 建 MLP 分类器 → 训练 200 轮 → 保存 .omc</c>
+<c>*   ⑤ 自检：用刚训练的模型当场识别一遍，验证得到 GLOSSED；最后显示字符和标签</c>
+<c></c>
+<c>* 二、关键参数为什么这么选</c>
+<c>*   阈值 150~255：背景暗、字符亮，取高阈值只保留亮字符</c>
+<c>*   膨胀 121×5：横向 121 大（把相邻字符连成一行，字间距通常远小于 121）；</c>
+<c>*              纵向 5 小（避免把上下两行粘在一起）</c>
+<c>*   max_area：先假设"文字块是画面中最大的亮块"，粗定位后再精切</c>
+<c>*   字符尺寸 [5000,120,40]~[50000,260,250]：去掉粘连块、碎点，只留单个字符</c>
+<c>*   字符数 == 7：GLOSSED 正好 7 个字母，数量不对说明切分失败，直接 throw</c>
+<c></c>
+<c>* 三、写死的路径（换机器/换图要改这里）</c>
+<c>*   图片  : E:/Downloads/Teacher_Zeng/GLOSSED.jpg</c>
+<c>*   训练集: D:/VSSRepos/XSaoXiangMu/XSao/Halcon/GLOSSED_training.trf</c>
+<c>*   模型  : D:/VSSRepos/XSaoXiangMu/XSao/Halcon/GLOSSED_MLP.omc</c>
+<c></c>
+<c>* 四、运行顺序：先跑本程序(01) 生成模型，再跑 02_recognize_GLOSSED.hdev</c>
+<c>* ========================================================</c>
+<c>* GLOSSED OCR 训练程序：先运行本程序，再运行识别程序。</c>
+<c>* 处理流程：读取图像 -&gt; 阈值分割 -&gt; 找最大文字区域 -&gt; 分割字符 -&gt; 训练 OCR。</c>
+<c>* 图片、训练文件和模型路径均直接写在代码中。</c>
+<c>* 关闭 HDevelop 自动刷新。</c>
+<l>dev_update_off ()</l>
+<c>* 输入：图片路径；输出：Image 图像对象。</c>
+<l>read_image (Image, 'E:/Downloads/Teacher_Zeng/GLOSSED.jpg')</l>
+<c>* 输入：彩色 Image；输出：GrayImage 灰度图。</c>
+<l>rgb1_to_gray (Image, GrayImage)</l>
+<c>* 输入：GrayImage；输出：BrightAll；150 到 255 保留亮字符。</c>
+<l>threshold (GrayImage, BrightAll, 150, 255)</l>
+<c>* 输入：BrightAll；输出：BrightComponents；分离连通区域。</c>
+<l>connection (BrightAll, BrightComponents)</l>
+<c>* 输入：BrightComponents；输出：LargeBrightComponents；按面积、高度、宽度过滤小噪声。</c>
+<l>select_shape (BrightComponents, LargeBrightComponents, ['area','height','width'], 'and', [300,20,10], [50000,300,300])</l>
+<c>* 输入：候选区域；输出：GroupedCandidates；横向 121、纵向 5，连接同一行字符。</c>
+<l>dilation_rectangle1 (LargeBrightComponents, GroupedCandidates, 121, 5)</l>
+<c>* 输入：GroupedCandidates；输出：GroupedUnion；合并候选区域。</c>
+<l>union1 (GroupedCandidates, GroupedUnion)</l>
+<c>* 输入：GroupedUnion；输出：ConnectedGroups；得到合并区域。</c>
+<l>connection (GroupedUnion, ConnectedGroups)</l>
+<c>* 输入：ConnectedGroups；输出：LargestTextGroup；选择面积最大的区域。</c>
+<l>select_shape_std (ConnectedGroups, LargestTextGroup, 'max_area', 70)</l>
+<c>* 输入：最大区域；输出：Row1、Col1、Row2、Col2 边界坐标。</c>
+<l>smallest_rectangle1 (LargestTextGroup, Row1, Col1, Row2, Col2)</l>
+<c>* 输入：四个边界坐标；输出：TextROI；生成动态文字 ROI。</c>
+<l>gen_rectangle1 (TextROI, Row1, Col1, Row2, Col2)</l>
+<c>* 输入：GrayImage 和 TextROI；输出：GrayROI；限制文字处理范围。</c>
+<l>reduce_domain (GrayImage, TextROI, GrayROI)</l>
+<c>* 输入：GrayROI；输出：BrightRegion；再次提取亮字符。</c>
+<l>threshold (GrayROI, BrightRegion, 150, 255)</l>
+<c>* 输入：BrightRegion；输出：ConnectedRegions；分离单个字符。</c>
+<l>connection (BrightRegion, ConnectedRegions)</l>
+<c>* 输入：ConnectedRegions；输出：CharacterCandidates；过滤不符合尺寸的区域。</c>
+<l>select_shape (ConnectedRegions, CharacterCandidates, ['area','height','width'], 'and', [5000,120,40], [50000,260,250])</l>
+<c>* 输入：字符候选区域；输出：Characters；按列从左到右排序。</c>
+<l>sort_region (CharacterCandidates, Characters, 'character', 'true', 'column')</l>
+<c>* 输入：Characters；输出：NumberCharacters；统计字符数量。</c>
+<l>count_obj (Characters, NumberCharacters)</l>
+<c>* 字符数量不是 7 时停止。</c>
+<l>if (NumberCharacters != 7)</l>
+<c>* 输出错误信息。</c>
+<l>    throw ('Expected 7 characters, but segmented ' + NumberCharacters)</l>
+<c>* 结束数量判断。</c>
+<l>endif</l>
+<c>* 输入：字符区域、原图、字符标签；输出：训练文件。</c>
+<l>TrainTrf := 'D:/VSSRepos/XSaoXiangMu/XSao/Halcon/GLOSSED_training.trf'</l>
+<l>write_ocr_trainf (Characters, GrayImage, ['G','L','O','S','S','E','D'], TrainTrf)</l>
+<c>* 输入：训练文件；输出：类别名称 CharacterNames 和样本数量 CharacterCount。</c>
+<l>read_ocr_trainf_names (TrainTrf, CharacterNames, CharacterCount)</l>
+<c>* 输入：类别名称和 MLP 参数；输出：OCRHandle 分类器句柄。</c>
+<l>create_ocr_class_mlp (8, 10, 'constant', 'default', CharacterNames, 20, 'normalization', 10, 42, OCRHandle)</l>
+<c>* 输入：分类器和训练文件；200 是最大训练次数；输出训练误差和日志。</c>
+<l>trainf_ocr_class_mlp (OCRHandle, TrainTrf, 200, 0.01, 0.01, TrainingError, ErrorLog)</l>
+<c>* 输入：字符区域、原图和分类器；输出 Classes 字符和 Confidence 置信度。</c>
+<l>do_ocr_multi_class_mlp (Characters, GrayImage, OCRHandle, Classes, Confidence)</l>
+<c>* 输入：Classes 字符数组；输出：拼接后的识别字符串。</c>
+<l>RecognizedText := join(Classes, '')</l>
+<l>TrainMlp :='D:/VSSRepos/XSaoXiangMu/XSao/Halcon/GLOSSED_MLP.omc'</l>
+<c>* 输入：训练好的分类器；输出：OCR 模型文件。</c>
+<l>write_ocr_class_mlp (OCRHandle, TrainMlp)</l>
+<c>* 输入：OCRHandle；释放分类器内存。</c>
+<l>clear_ocr_class_mlp (OCRHandle)</l>
+<c>* 输入：识别结果；输出：Success；结果为 GLOSSED 时为 true。</c>
+<l>Success := RecognizedText == 'GLOSSED'</l>
+<c>* 关闭旧窗口。</c>
+<l>dev_close_window ()</l>
+<c>* 输入：Image；输出：WindowHandle；创建显示窗口。</c>
+<l>dev_open_window_fit_image (Image, 0, 0, 1000, -1, WindowHandle)</l>
+<c>* 显示原图。</c>
+<l>dev_display (Image)</l>
+<c>* 设置区域显示为轮廓。</c>
+<l>dev_set_draw ('margin')</l>
+<c>* 设置轮廓线宽。</c>
+<l>dev_set_line_width (3)</l>
+<c>* 设置显示颜色为绿色。</c>
+<l>dev_set_color ('green')</l>
+<c>* 显示分割出的字符区域。</c>
+<l>dev_display (Characters)</l>
+<c>* 输入：Characters；输出每个字符的中心坐标。</c>
+<l>area_center (Characters, Area, Row, Column)</l>
+<c>* 在字符上方显示训练标签。</c>
+<l>disp_text (WindowHandle, ['G','L','O','S','S','E','D'], 'image', Row - 35, Column, 'green', ['box'], ['false'])</l>
+<c>* 显示训练完成和验证结果。</c>
+<l>disp_text (WindowHandle, ['Training complete','Verification: ' + RecognizedText], 'window', 12, 12, 'green', ['box'], ['true'])</l>
+</body>
+<docu id="main">
+<parameters/>
+</docu>
+</procedure>
+</hdevelop>

@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hdevelop file_version="1.2" halcon_version="24.05.0.0">
+<procedure name="main">
+<interface/>
+<body>
+<c>* GLOSSED OCR 识别程序：先运行 01_train_GLOSSED.hdev。</c>
+<c>* 处理流程：读取图片和模型 -&gt; 找最大文字区域 -&gt; 分割字符 -&gt; OCR 识别。</c>
+<c>* 图片和模型地址均直接写在代码中。</c>
+<c>* 关闭 HDevelop 自动刷新。</c>
+<l>dev_update_off ()</l>
+<c>* 输入：模型路径；输出：ModelExists，判断模型是否存在。</c>
+<l>TrainMlp :='D:/VSSRepos/XSaoXiangMu/XSao/Halcon/GLOSSED_MLP.omc'</l>
+<c></c>
+<l>file_exists (TrainMlp, ModelExists)</l>
+<c>* 模型不存在时进入错误分支。</c>
+<l>if (not ModelExists)</l>
+<c>* 输出错误信息。</c>
+<l>    throw ('OCR model not found. Run 01_train_GLOSSED.hdev first.')</l>
+<c>* 结束模型检查。</c>
+<l>endif</l>
+<c>* 输入：图片路径；输出：Image 图像对象。</c>
+<l>read_image (Image, 'E:/Downloads/Teacher_Zeng/GLOSSED.jpg')</l>
+<c>* 输入：彩色 Image；输出：GrayImage 灰度图。</c>
+<l>rgb1_to_gray (Image, GrayImage)</l>
+<c>* 输入：GrayImage；输出：BrightAll；150 到 255 保留亮字符。</c>
+<l>threshold (GrayImage, BrightAll, 150, 255)</l>
+<c>* 输入：BrightAll；输出：BrightComponents；分离连通区域。</c>
+<l>connection (BrightAll, BrightComponents)</l>
+<c>* 输入：BrightComponents；输出：LargeBrightComponents；过滤小噪声。</c>
+<l>select_shape (BrightComponents, LargeBrightComponents, ['area','height','width'], 'and', [300,20,10], [50000,300,300])</l>
+<c>* 输入：候选区域；输出：GroupedCandidates；横向连接同一行字符。</c>
+<l>dilation_rectangle1 (LargeBrightComponents, GroupedCandidates, 121, 5)</l>
+<c>* 输入：GroupedCandidates；输出：GroupedUnion；合并候选区域。</c>
+<l>union1 (GroupedCandidates, GroupedUnion)</l>
+<c>* 输入：GroupedUnion；输出：ConnectedGroups；得到合并区域。</c>
+<l>connection (GroupedUnion, ConnectedGroups)</l>
+<c>* 输入：ConnectedGroups；输出：LargestTextGroup；选择面积最大的文字区域。</c>
+<l>select_shape_std (ConnectedGroups, LargestTextGroup, 'max_area', 70)</l>
+<c>* 输入：最大区域；输出：Row1、Col1、Row2、Col2 边界坐标。</c>
+<l>smallest_rectangle1 (LargestTextGroup, Row1, Col1, Row2, Col2)</l>
+<c>* 输入：四个边界坐标；输出：TextROI；生成文字 ROI。</c>
+<l>gen_rectangle1 (TextROI, Row1, Col1, Row2, Col2)</l>
+<c>* 输入：GrayImage 和 TextROI；输出：GrayROI；限制识别范围。</c>
+<l>reduce_domain (GrayImage, TextROI, GrayROI)</l>
+<c>* 输入：GrayROI；输出：BrightRegion；再次提取亮字符。</c>
+<l>threshold (GrayROI, BrightRegion, 150, 255)</l>
+<c>* 输入：BrightRegion；输出：ConnectedRegions；分离单个字符。</c>
+<l>connection (BrightRegion, ConnectedRegions)</l>
+<c>* 输入：ConnectedRegions；输出：CharacterCandidates；过滤不符合尺寸的区域。</c>
+<l>select_shape (ConnectedRegions, CharacterCandidates, ['area','height','width'], 'and', [5000,120,40], [50000,260,250])</l>
+<c>* 输入：字符候选区域；输出：Characters；按列从左到右排序。</c>
+<l>sort_region (CharacterCandidates, Characters, 'character', 'true', 'column')</l>
+<c>* 输入：Characters；输出：NumberCharacters；统计字符数量。</c>
+<l>count_obj (Characters, NumberCharacters)</l>
+<c>* 字符数量不是 7 时停止。</c>
+<l>if (NumberCharacters != 7)</l>
+<c>* 输出错误信息。</c>
+<l>    throw ('Expected 7 characters, but segmented ' + NumberCharacters)</l>
+<c>* 结束数量检查。</c>
+<l>endif</l>
+<c>* 输入：模型路径；输出：OCRHandle 分类器句柄。</c>
+<l>read_ocr_class_mlp (TrainMlp, OCRHandle)</l>
+<c>* 输入：字符区域、原图和分类器；输出 Classes 字符、Confidence 置信度。</c>
+<l>do_ocr_multi_class_mlp (Characters, GrayImage, OCRHandle, Classes, Confidence)</l>
+<c>* 输入：OCRHandle；释放分类器内存。</c>
+<l>clear_ocr_class_mlp (OCRHandle)</l>
+<c>* 输入：Classes；输出：RecognizedText；拼接为完整字符串。</c>
+<l>RecognizedText := join(Classes, '')</l>
+<c>* 输入：识别结果；输出：Success；结果为 GLOSSED 时为 true。</c>
+<l>Success := RecognizedText == 'GLOSSED'</l>
+<c>* 识别正确时使用绿色。</c>
+<l>if (Success)</l>
+<c>* 设置显示颜色。</c>
+<l>    ResultColor := 'green'</l>
+<c>* 设置 PASS 状态。</c>
+<l>    StatusText := 'PASS'</l>
+<c>* 识别错误时进入此分支。</c>
+<l>else</l>
+<c>* 设置显示颜色。</c>
+<l>    ResultColor := 'red'</l>
+<c>* 设置 FAIL 状态。</c>
+<l>    StatusText := 'FAIL'</l>
+<c>* 结束结果判断。</c>
+<l>endif</l>
+<c>* 关闭旧窗口。</c>
+<l>dev_close_window ()</l>
+<c>* 输入：Image；输出：WindowHandle；创建显示窗口。</c>
+<l>dev_open_window_fit_image (Image, 0, 0, 1000, -1, WindowHandle)</l>
+<c>* 显示原图。</c>
+<l>dev_display (Image)</l>
+<c>* 设置区域显示为轮廓。</c>
+<l>dev_set_draw ('margin')</l>
+<c>* 设置轮廓线宽。</c>
+<l>dev_set_line_width (3)</l>
+<c>* 设置识别结果颜色。</c>
+<l>dev_set_color (ResultColor)</l>
+<c>* 显示字符区域。</c>
+<l>dev_display (Characters)</l>
+<c>* 输入：Characters；输出字符中心坐标。</c>
+<l>area_center (Characters, Area, Row, Column)</l>
+<c>* 在每个字符上方显示识别结果和置信度。</c>
+<l>disp_text (WindowHandle, Classes + '  ' + Confidence$'.3f', 'image', Row - 35, Column, ResultColor, ['box'], ['false'])</l>
+<c>* 在窗口左上角显示最终结果。</c>
+<l>disp_text (WindowHandle, ['OCR result: ' + RecognizedText,'Status: ' + StatusText], 'window', 12, 12, ResultColor, ['box'], ['true'])</l>
+</body>
+<docu id="main">
+<parameters/>
+</docu>
+</procedure>
+</hdevelop>

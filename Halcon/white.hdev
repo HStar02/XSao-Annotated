@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hdevelop file_version="1.2" halcon_version="24.05.0.0">
+<procedure name="main">
+<interface/>
+<body>
+<c>* 关闭中间图像自动刷新，保留最后手动绘制的图片、框和文字</c>
+<l>dev_update_window ('off')</l>
+<c>* 修改这里即可更换待检测图片</c>
+<l>ImagePath :='E:/Downloads/Teacher_Zeng/white.bmp'</l>
+<c>* 本图为 EAN-13；混合码制可改为 'auto' 或指定码制元组</c>
+<l>CodeTypes := 'EAN-13'</l>
+<l>read_image (Image, ImagePath)</l>
+<l>get_image_size (Image, Width, Height)</l>
+<c>* dev_get_window：取得当前图形窗口的“句柄”。</c>
+<l>dev_get_window (WindowHandle)</l>
+<c>* 四个参数依次是：左上角行、左上角列、右下角行、右下角列。</c>
+<c>* 像素坐标从 0 开始，所以最后一行是 Height-1、最后一列是 Width-1。</c>
+<c>* (0, 0, Height-1, Width-1) 就是从最左上角框到最右下角，也就是整张图。</c>
+<c>* 如果不设，窗口可能保留上次的放大或拖动状态，只显示图像的一小块。</c>
+<l>dev_set_part (0, 0, Height - 1, Width - 1)</l>
+<l>clear_window (WindowHandle)</l>
+<l>disp_obj (Image, WindowHandle)</l>
+<l>set_font (WindowHandle, '微软雅黑-Bold-22')</l>
+<l>DecodedDataStrings := []</l>
+<l>create_bar_code_model ([], [], BarCodeHandle)</l>
+<l>try</l>
+<c>    * set_bar_code_param：给条码模型设置参数。</c>
+<c>    * 'stop_after_result_num' 表示“找到多少个结果就停止搜索”。</c>
+<c>    * 设成 0 表示不限制数量，图里有几个码就全部找出来。</c>
+<c>    * 千万不要设成 1，否则找到第一个码就停了，后面的码会漏掉。</c>
+<l>    set_bar_code_param (BarCodeHandle, 'stop_after_result_num', 0)</l>
+<c>    * find_bar_code：核心算子，开始找条码并解码。</c>
+<c>    * 输入：Image 是要检测的图；BarCodeHandle 是模型句柄；</c>
+<c>    *       CodeTypes 是码制（这里是 EAN-13）。</c>
+<c>    * 输出：SymbolRegions 是找到的条码区域（可能有多个）；</c>
+<c>    *       DecodedDataStrings 是解码出来的字符串，和区域一一对应。</c>
+<l>    find_bar_code (Image, SymbolRegions, BarCodeHandle, CodeTypes, DecodedDataStrings)</l>
+<l>catch (Exception)</l>
+<c>    * 发生异常时，先把条码模型释放掉，避免内存泄漏。</c>
+<c>    * 就算程序出错，也要把申请的资源归还。</c>
+<l>    clear_bar_code_model (BarCodeHandle)</l>
+<l>    disp_text (WindowHandle, '识别发生异常，请查看错误信息', 'window', 20, 20, 'red', 'box', 'true')</l>
+<l>    throw (Exception)</l>
+<l>endtry</l>
+<c>* 正常执行完也要释放条码模型，养成“用完就还”的习惯。</c>
+<l>clear_bar_code_model (BarCodeHandle)</l>
+<c>* 必须按返回字符串数量判断，而不是判断字符串是否等于空串</c>
+<l>CodeCount := |DecodedDataStrings|</l>
+<c>* 获取当前窗口实际尺寸，不再假定窗口是 1000×733</c>
+<l>get_window_extents (WindowHandle, WindowRow, WindowColumn, WindowWidth, WindowHeight)</l>
+<l>if (CodeCount = 0)</l>
+<l>    disp_text (WindowHandle, '未识别到一维码', 'window', 20, 20, 'red', 'box', 'true')</l>
+<l>else</l>
+<c>    * set_draw 设为 'margin'：画区域时只画边缘轮廓，不填充内部，</c>
+<c>    * 这样不会把条码本身盖住（full）。</c>
+<l>    set_draw (WindowHandle, 'margin')</l>
+<l>    set_color (WindowHandle, 'green')</l>
+<l>    set_line_width (WindowHandle, 3)</l>
+<c>    * disp_obj：把所有条码区域 SymbolRegions 用绿框画出来。</c>
+<l>    disp_obj (SymbolRegions, WindowHandle)</l>
+<l>    for Index := 0 to CodeCount - 1 by 1</l>
+<c>        * select_obj：从所有区域里取出第 Index+1 个区域。</c>
+<c>        * 注意：HALCON 的“图像对象”下标从 1 开始，而字符串数组从 0 开始，</c>
+<c>        * 所以这里要写 Index + 1，两边的编号才能一一对应。</c>
+<l>        select_obj (SymbolRegions, OneCodeRegion, Index + 1)</l>
+<l>        smallest_rectangle1 (OneCodeRegion, Row1, Column1, Row2, Column2)</l>
+<l>        Label := (Index + 1)$'d' + ': ' + DecodedDataStrings[Index]</l>
+<c>        * 按当前窗口大小及图像显示范围转换坐标，兼容窗口缩放和显示区域变化</c>
+<l>        convert_coordinates_image_to_window (WindowHandle, Row1, Column1, CodeWindowRow, CodeWindowColumn)</l>
+<l>        get_string_extents (WindowHandle, Label, Ascent, Descent, TextWidth, TextHeight)</l>
+<c>        * 文字放在条码上方，预留 8 像素间距；同时限制在窗口可见范围内</c>
+<l>        TextRow := max2(10, min2(CodeWindowRow - TextHeight - 8, WindowHeight - TextHeight - 10))</l>
+<l>        TextColumn := max2(10, min2(CodeWindowColumn, WindowWidth - TextWidth - 10))</l>
+<l>        disp_text (WindowHandle, Label, 'window', TextRow, TextColumn, 'black', 'box', 'true')</l>
+<l>    endfor</l>
+<l>    disp_text (WindowHandle, '成功识别 ' + CodeCount$'d' + ' 个一维码', 'window', 20, 20, 'dark green', 'box', 'true')</l>
+<l>endif</l>
+<c>* DecodedDataStrings 保留所有成功解码的内容，重复内容不去重</c>
+<c>* 未识别到只表示未成功解码，也可能是模糊、破损或码制不匹配</c>
+<c>* 若运行结束后调整窗口大小或缩放图像，请重新运行以重绘文字</c>
+</body>
+<docu id="main">
+<parameters/>
+</docu>
+</procedure>
+</hdevelop>
